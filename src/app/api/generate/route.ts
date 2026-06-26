@@ -2,9 +2,79 @@ import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 import { db } from "@/db";
 import { songs } from "@/db/schema";
+import { Client } from "@gradio/client";
 import lamejs from "lamejs";
 
-const HF_API_URL = "https://api-inference.huggingface.co/models/facebook/musicgen-small";
+export async function POST(req: NextRequest) {
+  try {
+    const { prompt, duration, title } = await req.json();
+
+    if (!prompt || typeof prompt !== "string") {
+      return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
+    }
+
+    const clampedDuration = Math.min(Math.max(Number(duration) || 10, 5), 30);
+
+    const client = await Client.connect("facebook/MusicGen");
+
+    const result = await client.predict("/predict", {
+      text: prompt,
+      melody: null,
+      duration: clampedDuration,
+      topk: 250,
+      topp: 0,
+      temperature: 1,
+      cfg_coef: 3,
+    });
+
+    const output = result.data as Array<{ url?: string; path?: string } | string>;
+    const audioEntry = Array.isArray(output) ? output[1] ?? output[0] : output;
+    let audioUrl: string;
+
+    if (typeof audioEntry === "string") {
+      audioUrl = audioEntry;
+    } else if (audioEntry && typeof audioEntry === "object" && (audioEntry.url || audioEntry.path)) {
+      audioUrl = (audioEntry.url ?? audioEntry.path) as string;
+    } else {
+      console.error("Unexpected Gradio output:", JSON.stringify(output));
+      return NextResponse.json({ error: "Music generation failed. Please try again." }, { status: 500 });
+    }
+
+    const audioRes = await fetch(audioUrl);
+    if (!audioRes.ok) {
+      return NextResponse.json({ error: "Failed to fetch generated audio." }, { status: 500 });
+    }
+
+    const wavBuffer = await audioRes.arrayBuffer();
+    const mp3Buffer = wavToMp3(wavBuffer);
+
+    const filename = `songs/${Date.now()}.mp3`;
+    const { url: blobUrl } = await put(filename, mp3Buffer, {
+      access: "public",
+      contentType: "audio/mpeg",
+    });
+
+    const songTitle = title?.trim() || prompt.slice(0, 50);
+
+    const [song] = await db
+      .insert(songs)
+      .values({
+        title: songTitle,
+        prompt,
+        audioUrl: blobUrl,
+        duration: clampedDuration,
+      })
+      .returning();
+
+    return NextResponse.json({ song });
+  } catch (err) {
+    console.error("Generation error:", err);
+    return NextResponse.json(
+      { error: "Failed to generate music. Please try again." },
+      { status: 500 }
+    );
+  }
+}
 
 function wavToMp3(wavBuffer: ArrayBuffer): Buffer {
   const view = new DataView(wavBuffer);
@@ -49,74 +119,4 @@ function wavToMp3(wavBuffer: ArrayBuffer): Buffer {
     offset += chunk.length;
   }
   return mp3Buffer;
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const { prompt, duration, title } = await req.json();
-
-    if (!prompt || typeof prompt !== "string") {
-      return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
-    }
-
-    const clampedDuration = Math.min(Math.max(Number(duration) || 10, 5), 30);
-
-    const hfRes = await fetch(HF_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: clampedDuration * 50,
-        },
-      }),
-    });
-
-    if (!hfRes.ok) {
-      const text = await hfRes.text();
-      console.error("HuggingFace error:", text);
-      if (hfRes.status === 503) {
-        return NextResponse.json(
-          { error: "Model is loading, please try again in 30 seconds." },
-          { status: 503 }
-        );
-      }
-      return NextResponse.json(
-        { error: "Music generation failed. Please try again." },
-        { status: 500 }
-      );
-    }
-
-    const wavBuffer = await hfRes.arrayBuffer();
-    const mp3Buffer = wavToMp3(wavBuffer);
-
-    const filename = `songs/${Date.now()}.mp3`;
-    const { url } = await put(filename, mp3Buffer, {
-      access: "public",
-      contentType: "audio/mpeg",
-    });
-
-    const songTitle = title?.trim() || prompt.slice(0, 50);
-
-    const [song] = await db
-      .insert(songs)
-      .values({
-        title: songTitle,
-        prompt,
-        audioUrl: url,
-        duration: clampedDuration,
-      })
-      .returning();
-
-    return NextResponse.json({ song });
-  } catch (err) {
-    console.error("Generation error:", err);
-    return NextResponse.json(
-      { error: "Failed to generate music. Please try again." },
-      { status: 500 }
-    );
-  }
 }
