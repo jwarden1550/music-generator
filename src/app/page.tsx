@@ -321,21 +321,16 @@ function SongCard({
         <div style={{ fontWeight: 600, fontSize: 15, color: "var(--text)", marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {song.title}
         </div>
-        <div style={{ fontSize: 13, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 8 }}>
           {song.prompt}
         </div>
-        {isPlaying && (
-          <div style={{ marginTop: 8 }}>
-            <audio
-              ref={audioRef}
-              src={song.audioUrl}
-              onEnded={onEnded}
-              controls
-              autoPlay
-              style={{ width: "100%", height: 32, accentColor: "var(--accent)" }}
-            />
-          </div>
-        )}
+        <audio
+          ref={audioRef}
+          src={song.audioUrl}
+          onEnded={onEnded}
+          controls
+          style={{ width: "100%", height: 32, accentColor: "var(--accent)" }}
+        />
       </div>
 
       {/* Meta */}
@@ -347,9 +342,9 @@ function SongCard({
       {/* Download */}
       <a
         href={song.audioUrl}
-        download={`${song.title}.wav`}
+        download={`${song.title}.mp3`}
         style={{ color: "var(--text-muted)", fontSize: 18, textDecoration: "none", flexShrink: 0 }}
-        title="Download"
+        title="Download MP3"
       >
         ↓
       </a>
