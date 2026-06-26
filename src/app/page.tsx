@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { Song } from "@/db/schema";
 
 const GENRES = ["Cinematic", "Jazz", "Lo-fi", "Electronic", "Ambient", "Classical", "Rock", "Acoustic"];
@@ -15,6 +15,7 @@ export default function Home() {
   const [playingId, setPlayingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingSongs, setLoadingSongs] = useState(true);
+  const [trimmingId, setTrimmingId] = useState<number | null>(null);
   const audioRefs = useRef<Record<number, HTMLAudioElement | null>>({});
 
   useEffect(() => {
@@ -64,6 +65,7 @@ export default function Home() {
       await fetch(`/api/songs/${id}`, { method: "DELETE" });
       setSongs((prev) => prev.filter((s) => s.id !== id));
       if (playingId === id) setPlayingId(null);
+      if (trimmingId === id) setTrimmingId(null);
     } catch {
       // ignore
     }
@@ -225,16 +227,22 @@ export default function Home() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {songs.map((song) => (
-                <SongCard
-                  key={song.id}
-                  song={song}
-                  isPlaying={playingId === song.id}
-                  onTogglePlay={() => togglePlay(song.id)}
-                  onDelete={() => deleteSong(song.id)}
-                  audioRef={(el) => { audioRefs.current[song.id] = el; }}
-                  onEnded={() => setPlayingId(null)}
-                  formatDate={formatDate}
-                />
+                <div key={song.id}>
+                  <SongCard
+                    song={song}
+                    isPlaying={playingId === song.id}
+                    isTrimming={trimmingId === song.id}
+                    onTogglePlay={() => togglePlay(song.id)}
+                    onToggleTrim={() => setTrimmingId(trimmingId === song.id ? null : song.id)}
+                    onDelete={() => deleteSong(song.id)}
+                    audioRef={(el) => { audioRefs.current[song.id] = el; }}
+                    onEnded={() => setPlayingId(null)}
+                    formatDate={formatDate}
+                  />
+                  {trimmingId === song.id && (
+                    <LoopTrimmer song={song} onClose={() => setTrimmingId(null)} />
+                  )}
+                </div>
               ))}
             </div>
           )}
@@ -267,7 +275,9 @@ function WaveBars() {
 function SongCard({
   song,
   isPlaying,
+  isTrimming,
   onTogglePlay,
+  onToggleTrim,
   onDelete,
   audioRef,
   onEnded,
@@ -275,7 +285,9 @@ function SongCard({
 }: {
   song: Song;
   isPlaying: boolean;
+  isTrimming: boolean;
   onTogglePlay: () => void;
+  onToggleTrim: () => void;
   onDelete: () => void;
   audioRef: (el: HTMLAudioElement | null) => void;
   onEnded: () => void;
@@ -285,8 +297,8 @@ function SongCard({
     <div
       style={{
         background: "var(--bg-card)",
-        border: `1px solid ${isPlaying ? "var(--accent)" : "var(--border)"}`,
-        borderRadius: 12,
+        border: `1px solid ${isPlaying || isTrimming ? "var(--accent)" : "var(--border)"}`,
+        borderRadius: isTrimming ? "12px 12px 0 0" : 12,
         padding: "16px 20px",
         display: "flex",
         alignItems: "center",
@@ -339,6 +351,25 @@ function SongCard({
         <div style={{ marginTop: 4 }}>{formatDate(song.createdAt)}</div>
       </div>
 
+      {/* Trim loop button */}
+      <button
+        onClick={onToggleTrim}
+        title="Trim Loop"
+        style={{
+          background: isTrimming ? "var(--accent)" : "var(--bg-input)",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          color: isTrimming ? "white" : "var(--text-muted)",
+          fontSize: 13,
+          padding: "6px 10px",
+          cursor: "pointer",
+          flexShrink: 0,
+          transition: "all 0.2s",
+        }}
+      >
+        ✂ Loop
+      </button>
+
       {/* Download */}
       <a
         href={song.audioUrl}
@@ -359,4 +390,218 @@ function SongCard({
       </button>
     </div>
   );
+}
+
+function LoopTrimmer({ song, onClose }: { song: Song; onClose: () => void }) {
+  const [startPct, setStartPct] = useState(0);
+  const [endPct, setEndPct] = useState(100);
+  const [totalDuration, setTotalDuration] = useState(song.duration);
+  const [looping, setLooping] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const sourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const ctxRef = useRef<AudioContext | null>(null);
+  const bufferRef = useRef<AudioBuffer | null>(null);
+
+  const startSec = (startPct / 100) * totalDuration;
+  const endSec = (endPct / 100) * totalDuration;
+  const loopDuration = endSec - startSec;
+
+  const loadBuffer = useCallback(async () => {
+    if (bufferRef.current) return bufferRef.current;
+    const res = await fetch(song.audioUrl);
+    const arrayBuffer = await res.arrayBuffer();
+    const ctx = new AudioContext();
+    ctxRef.current = ctx;
+    const decoded = await ctx.decodeAudioData(arrayBuffer);
+    bufferRef.current = decoded;
+    setTotalDuration(decoded.duration);
+    return decoded;
+  }, [song.audioUrl]);
+
+  function stopLoop() {
+    sourceRef.current?.stop();
+    sourceRef.current = null;
+    setLooping(false);
+  }
+
+  async function toggleLoop() {
+    if (looping) {
+      stopLoop();
+      return;
+    }
+    const buffer = await loadBuffer();
+    const ctx = ctxRef.current!;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    source.loopStart = startSec;
+    source.loopEnd = endSec;
+    source.connect(ctx.destination);
+    source.start(0, startSec);
+    sourceRef.current = source;
+    setLooping(true);
+  }
+
+  async function exportLoop() {
+    setExporting(true);
+    try {
+      const buffer = await loadBuffer();
+      const sampleRate = buffer.sampleRate;
+      const startFrame = Math.floor(startSec * sampleRate);
+      const endFrame = Math.floor(endSec * sampleRate);
+      const frameCount = endFrame - startFrame;
+
+      const offlineCtx = new OfflineAudioContext(buffer.numberOfChannels, frameCount, sampleRate);
+      const source = offlineCtx.createBufferSource();
+      source.buffer = buffer;
+      source.start(0, startSec, loopDuration);
+      source.connect(offlineCtx.destination);
+      const rendered = await offlineCtx.startRendering();
+
+      const wav = audioBufferToWav(rendered);
+      const blob = new Blob([wav], { type: "audio/wav" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${song.title}-loop.wav`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      stopLoop();
+      ctxRef.current?.close();
+    };
+  }, []);
+
+  return (
+    <div style={{
+      background: "var(--bg-input)",
+      border: "1px solid var(--accent)",
+      borderTop: "none",
+      borderRadius: "0 0 12px 12px",
+      padding: "20px 24px",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>✂ Loop Trimmer</span>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          {startSec.toFixed(1)}s → {endSec.toFixed(1)}s &nbsp;·&nbsp; <strong style={{ color: "var(--text)" }}>{loopDuration.toFixed(1)}s loop</strong>
+        </span>
+      </div>
+
+      {/* Start slider */}
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+          Start: {startSec.toFixed(1)}s
+        </label>
+        <input
+          type="range" min={0} max={endPct - 1} value={startPct}
+          onChange={(e) => setStartPct(Number(e.target.value))}
+          style={{ width: "100%", accentColor: "var(--accent)" }}
+        />
+      </div>
+
+      {/* End slider */}
+      <div style={{ marginBottom: 20 }}>
+        <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+          End: {endSec.toFixed(1)}s
+        </label>
+        <input
+          type="range" min={startPct + 1} max={100} value={endPct}
+          onChange={(e) => setEndPct(Number(e.target.value))}
+          style={{ width: "100%", accentColor: "var(--accent)" }}
+        />
+      </div>
+
+      {/* Visual range bar */}
+      <div style={{ height: 6, background: "var(--border)", borderRadius: 3, marginBottom: 20, position: "relative" }}>
+        <div style={{
+          position: "absolute",
+          left: `${startPct}%`,
+          width: `${endPct - startPct}%`,
+          height: "100%",
+          background: "linear-gradient(90deg, var(--accent), var(--accent-light))",
+          borderRadius: 3,
+        }} />
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: "flex", gap: 10 }}>
+        <button
+          onClick={toggleLoop}
+          style={{
+            flex: 1,
+            padding: "10px",
+            borderRadius: 8,
+            border: "none",
+            background: looping ? "var(--accent)" : "var(--bg-card)",
+            color: "white",
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: "pointer",
+            transition: "background 0.2s",
+          }}
+        >
+          {looping ? "⏹ Stop Loop" : "▶ Preview Loop"}
+        </button>
+        <button
+          onClick={exportLoop}
+          disabled={exporting}
+          style={{
+            flex: 1,
+            padding: "10px",
+            borderRadius: 8,
+            border: "none",
+            background: exporting ? "var(--border)" : "linear-gradient(135deg, var(--accent), var(--accent-light))",
+            color: "white",
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: exporting ? "not-allowed" : "pointer",
+          }}
+        >
+          {exporting ? "Exporting..." : "↓ Export Loop (.wav)"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function audioBufferToWav(buffer: AudioBuffer): ArrayBuffer {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const length = buffer.length;
+  const arrayBuffer = new ArrayBuffer(44 + length * numChannels * 2);
+  const view = new DataView(arrayBuffer);
+
+  function writeStr(offset: number, str: string) {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
+
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + length * numChannels * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * 2, true);
+  view.setUint16(32, numChannels * 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, length * numChannels * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < length; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const sample = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+  }
+  return arrayBuffer;
 }
