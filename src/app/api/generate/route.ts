@@ -17,6 +17,10 @@ export async function POST(req: NextRequest) {
 
     const client = await Client.connect("facebook/MusicGen");
 
+    // Log available endpoints for debugging
+    const api = await client.view_api();
+    console.log("Available endpoints:", JSON.stringify(Object.keys(api.named_endpoints)));
+
     const result = await client.predict("/predict", {
       text: prompt,
       melody: null,
