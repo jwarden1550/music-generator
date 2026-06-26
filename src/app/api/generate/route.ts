@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { songs } from "@/db/schema";
 import lamejs from "lamejs";
 
-const HF_API_URL = "https://api-inference.huggingface.co/models/facebook/musicgen-small";
+const HF_API_URL = "https://router.huggingface.co/hf-inference/models/facebook/musicgen-small";
 
 function wavToMp3(wavBuffer: ArrayBuffer): Buffer {
   const view = new DataView(wavBuffer);
